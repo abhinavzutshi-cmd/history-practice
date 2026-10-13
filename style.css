@@ -147,6 +147,7 @@ input[type=number] { width: 90px; }
 .player { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; }
 .player .who { flex: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .player.locked { opacity: .45; }
+.neg { color: var(--bad); font-weight: 800; margin-left: 4px; }
 .player.won { border-color: var(--good); background: var(--good-soft); }
 .nav { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .cats3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }

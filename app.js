@@ -44,7 +44,7 @@
     difficulty: "all",
     avoidSeen: true,
     hideAnswer: false,
-    bee: { count: 30, players: ["Player 1", "Player 2", "Player 3", "Player 4"] },
+    bee: { count: 30, players: ["Player 1", "Player 2", "Player 3", "Player 4"], neg3: true },
     bowl: { teams: ["Team A", "Team B"], q1: 8, q2: 8, q4: 8, q3secs: 60 },
   };
   let settings = Object.assign({}, DEFAULTS, load(LS_SETTINGS, {}));
@@ -240,6 +240,7 @@
         <h2>5 · Options</h2>
         <label class="row"><input type="checkbox" data-action="toggle" data-key="avoidSeen" ${s.avoidSeen ? "checked" : ""}> Skip questions already used in earlier games on this device <span class="muted small">(${seen.size.toLocaleString()} used)</span>
           <button class="btn ghost small" data-action="reset-seen">Reset used list</button></label>
+        ${s.format === "bee" ? `<label class="row" style="margin-top:6px"><input type="checkbox" data-action="toggle" data-key="bee.neg3" ${s.bee.neg3 ? "checked" : ""}> Bee: the third incorrect answer on a question loses 1 point if it interrupts (question not finished)</label>` : ""}
         <label class="row" style="margin-top:6px"><input type="checkbox" data-action="toggle" data-key="hideAnswer" ${s.hideAnswer ? "checked" : ""}> Blur answers until clicked (for screen-sharing)</label>
       </div>
       <div class="panel row">
@@ -264,7 +265,7 @@
       game = {
         format: "bee",
         players: s.bee.players.filter((n) => n.trim()).map((n) => ({ name: n.trim(), score: 0 })),
-        queue: ids, idx: 0, results: {}, locked: [],
+        queue: ids, idx: 0, results: {}, locked: [], qs: {}, neg3: !!s.bee.neg3,
       };
     } else {
       const q1 = draw(tossupPool("q1"), s.bowl.q1);
@@ -319,6 +320,8 @@
     markSeen(t.id);
     const res = g.results[g.idx];
     const winner = res && res.by != null ? g.players[res.by] : null;
+    const st = beeState();
+    const penalty = st.neg != null ? ` <b>${esc(g.players[st.neg].name)}</b> lost 1 point (third wrong answer, interrupted).` : "";
     app.innerHTML = `
       ${scoreboard(g.players)}
       <div class="progress">
@@ -331,18 +334,21 @@
         ${answerBlock(t.a)}
       </div>
       <div class="controls">
-        <h3>Who buzzed?</h3>
+        <div class="row" style="margin-bottom:8px"><h3 style="margin:0">Who buzzed?</h3><span class="spacer"></span>
+          ${g.neg3 ? `<span class="muted small">Wrong answers: ${st.wrong || 0}</span>
+          <button class="btn ${st.done ? "primary" : ""}" data-action="bee-done" ${res ? "disabled" : ""} title="Mark when you have read the whole question; after that a third wrong answer is not penalized">${st.done ? "✓ Question finished" : "Finished reading?"}<span class="kbd">F</span></button>` : ""}
+        </div>
         <div class="player-grid">
           ${g.players.map((p, i) => `
             <div class="player ${g.locked.includes(i) ? "locked" : ""} ${res && res.by === i ? "won" : ""}">
-              <span class="who" title="${esc(p.name)}">${esc(p.name)}</span>
+              <span class="who" title="${esc(p.name)}">${esc(p.name)}${st.neg === i ? ' <span class="neg">−1</span>' : ""}</span>
               <button class="btn good" data-action="bee-right" data-i="${i}" ${res || g.locked.includes(i) ? "disabled" : ""} title="Correct">✓</button>
               <button class="btn bad" data-action="bee-wrong" data-i="${i}" ${res || g.locked.includes(i) ? "disabled" : ""} title="Incorrect — locked out">✗</button>
             </div>`).join("")}
         </div>
         <p class="status">${winner ? `<b>${esc(winner.name)}</b> answered correctly (+1).` :
           g.locked.length ? `Locked out: ${g.locked.map((i) => esc(g.players[i].name)).join(", ")}. Keep reading for the others.` :
-          "Read the question; mark the first player to answer."}</p>
+          "Read the question; mark the first player to answer."}${penalty}</p>
       </div>
       <div class="nav">
         <button class="btn" data-action="prev" ${g.idx === 0 ? "disabled" : ""}>← Previous</button>
@@ -354,13 +360,19 @@
       </div>`;
   }
 
+  // Per-question bee state: wrong-answer count, whether reading finished, who took the -1.
+  function beeState() {
+    game.qs = game.qs || {};
+    return (game.qs[game.idx] = game.qs[game.idx] || { wrong: 0, done: false, neg: null });
+  }
+
   // =====================================================================
   // BOWL
   // =====================================================================
   const QUARTER_INFO = {
     1: ["First Quarter", "Tossups worth 10 points. A team that answers incorrectly is locked out; the other team may answer after the question is finished."],
     2: ["Second Quarter", "Tossups worth 10 points. A team that answers correctly earns a 10-point bonus question."],
-    3: ["Third Quarter", "Lightning rounds. The trailing team chooses a category first; each team answers its 8 questions for 10 points each within the time limit."],
+    3: ["Third Quarter", "Lightning rounds. The trailing team chooses a category first; each team answers its 8 questions for 10 points each within the time limit. Questions a team misses bounce back to the other team for 10 points each."],
     4: ["Fourth Quarter", "Pyramidal tossups: 30 points before (+), 20 before (*), 10 after."],
   };
 
@@ -484,6 +496,7 @@
           <span class="spacer"></span><button class="btn ghost" data-action="skip-q3">Skip to fourth quarter</button></div>`;
       return;
     }
+    if (g.phase === "q3bounce") return renderBounce();
     // q3run
     const cur = q.order[q.order.length - 1];
     const c = Q3.get(cur.set);
@@ -501,7 +514,7 @@
       </div>
       ${done ? `<div class="panel interstitial"><div class="big">${q.remaining <= 0 ? "Time!" : "Category complete"}</div>
           <p>${esc(g.teams[cur.team].name)} answered ${marks.filter(Boolean).length} of ${c.items.length} (${marks.filter(Boolean).length * 10} points).</p>
-          <button class="btn primary big" data-action="q3-finish">${q.order.length < 2 ? "Next team picks →" : "On to the fourth quarter →"}</button></div>`
+          <button class="btn primary big" data-action="q3-finish">${marks.some((m) => m === false) ? `Bounceback to ${esc(g.teams[1 - cur.team].name)} →` : q.order.length < 2 ? "Next team picks →" : "On to the fourth quarter →"}</button></div>`
       : `<div class="qcard">
           ${c.lead ? `<div class="muted" style="margin-bottom:6px">${esc(c.lead)}</div>` : ""}
           <div class="stage" style="margin-bottom:6px">${i + 1} of ${c.items.length}</div>
@@ -514,10 +527,59 @@
         </div>`}
       <div class="panel">
         <h3>${esc(c.title)} — read list</h3>
-        <ul class="lightning-list">${c.items.map((x, k) => `<li><span>${k + 1}.</span><span>${esc(x.a.split(/ \(|\[/)[0])}</span><span class="r">${marks[k] == null ? "" : marks[k] ? "✓" : "✗"}</span></li>`).join("")}</ul>
+        <ul class="lightning-list">${c.items.map((x, k) => `<li><span>${k + 1}.</span><span>${esc(x.a.split(/ \(|\[/)[0])}</span><span class="r">${q3Mark(cur.set, k)}</span></li>`).join("")}</ul>
       </div>
       <div class="nav"><button class="btn" data-action="undo" ${undoStack.length ? "" : "disabled"}>Undo<span class="kbd">U</span></button>
         <span class="spacer"></span><button class="btn ghost" data-action="end">End game</button></div>`;
+  }
+
+  function q3Mark(set, k) {
+    const m = (game.q3.marks[set] || [])[k];
+    const b = ((game.q3.bounce || {})[set] || {})[k];
+    if (m == null) return "";
+    if (m) return "✓";
+    return b == null ? "✗" : b ? "✗ · bounceback ✓" : "✗ · bounceback ✗";
+  }
+
+  function renderBounce() {
+    const g = game, q = g.q3, bb = q.bb;
+    const c = Q3.get(bb.set);
+    const marks = q.bounce[bb.set];
+    const done = bb.pos >= bb.list.length;
+    const k = bb.list[Math.min(bb.pos, bb.list.length - 1)];
+    const it = c.items[k];
+    const got = bb.list.filter((x) => marks[x]).length;
+    app.innerHTML = `
+      ${scoreboard(g.teams)}
+      <div class="progress">
+        <span class="stage">Third Quarter · Bounceback to ${esc(g.teams[bb.team].name)} · ${esc(c.title)}</span>
+      </div>
+      ${done ? `<div class="panel interstitial"><div class="big">Bounceback complete</div>
+          <p>${esc(g.teams[bb.team].name)} answered ${got} of ${bb.list.length} (${got * 10} points).</p>
+          <button class="btn primary big" data-action="q3-bounce-done">${q.order.length < 2 ? "Next team picks →" : "On to the fourth quarter →"}</button></div>`
+      : `<div class="qcard bonus-card">
+          <div class="who">Bounceback ${bb.pos + 1} of ${bb.list.length} for ${esc(g.teams[bb.team].name)}</div>
+          ${c.lead ? `<div class="muted" style="margin-bottom:6px">${esc(c.lead)}</div>` : ""}
+          <div class="qtext lightning">${fmtQ(it.q)}</div>
+          ${answerBlock(it.a)}
+        </div>
+        <div class="controls row">
+          <button class="btn good big" data-action="q3-bounce" data-ok="1">Correct · 10<span class="kbd">C</span></button>
+          <button class="btn bad big" data-action="q3-bounce" data-ok="0">Incorrect<span class="kbd">X</span></button>
+        </div>`}
+      <div class="panel">
+        <h3>${esc(c.title)} — read list</h3>
+        <ul class="lightning-list">${c.items.map((x, j) => `<li><span>${j + 1}.</span><span>${esc(x.a.split(/ \(|\[/)[0])}</span><span class="r">${q3Mark(bb.set, j)}</span></li>`).join("")}</ul>
+      </div>
+      <div class="nav"><button class="btn" data-action="undo" ${undoStack.length ? "" : "disabled"}>Undo<span class="kbd">U</span></button>
+        <span class="spacer"></span><button class="btn ghost" data-action="end">End game</button></div>`;
+  }
+
+  // After a team's lightning round (and any bounceback), move to the next pick or quarter 4.
+  function q3Next() {
+    const g = game;
+    if (g.q3.order.length < 2) g.phase = "q3pick";
+    else { g.quarter = 4; g.idx = 0; g.phase = "intro"; }
   }
 
   function startTimer() {
@@ -671,8 +733,19 @@
       // ----- bee -----
       case "bee-right":
         snapshot(); g.players[i].score += 1; g.results[g.idx] = { by: i }; break;
-      case "bee-wrong":
-        snapshot(); g.locked.push(i); break;
+      case "bee-wrong": {
+        snapshot();
+        g.locked.push(i);
+        const st = beeState();
+        st.wrong++;
+        if (g.neg3 && st.wrong === 3 && !st.done) {
+          g.players[i].score -= 1;
+          st.neg = i;
+        }
+        break;
+      }
+      case "bee-done":
+        snapshot(); beeState().done = !beeState().done; break;
 
       // ----- bowl -----
       case "begin-quarter":
@@ -718,11 +791,29 @@
       case "timer":
         if (timer) stopTimer(); else startTimer();
         break;
-      case "q3-finish":
+      case "q3-finish": {
         snapshot(); stopTimer();
-        if (g.q3.order.length < 2) g.phase = "q3pick";
-        else { g.quarter = 4; g.idx = 0; g.phase = "intro"; }
+        const cur = g.q3.order[g.q3.order.length - 1];
+        const missed = (g.q3.marks[cur.set] || []).map((m, k) => (m === false ? k : -1)).filter((k) => k >= 0);
+        if (missed.length) {
+          g.q3.bounce = g.q3.bounce || {};
+          g.q3.bounce[cur.set] = {};
+          g.q3.bb = { set: cur.set, team: 1 - cur.team, list: missed, pos: 0 };
+          g.phase = "q3bounce";
+        } else q3Next();
         break;
+      }
+      case "q3-bounce": {
+        snapshot();
+        const bb = g.q3.bb;
+        const ok = el.dataset.ok === "1";
+        g.q3.bounce[bb.set][bb.list[bb.pos]] = ok;
+        if (ok) g.teams[bb.team].score += 10;
+        bb.pos++;
+        break;
+      }
+      case "q3-bounce-done":
+        snapshot(); q3Next(); break;
       case "skip-q3":
         snapshot(); stopTimer(); g.quarter = 4; g.idx = 0; g.phase = "intro"; break;
       case "tiebreak":
@@ -754,7 +845,10 @@
     }
     if (a === "num") setPath(el.dataset.path, Math.max(1, parseInt(el.value, 10) || 1));
     else if (a === "diff") settings.difficulty = el.value;
-    else if (a === "toggle") settings[el.dataset.key] = el.checked;
+    else if (a === "toggle") {
+      if (el.dataset.key.includes(".")) setPath(el.dataset.key, el.checked);
+      else settings[el.dataset.key] = el.checked;
+    }
     else return;
     save(LS_SETTINGS, settings);
     renderSetup();
@@ -767,12 +861,13 @@
       if (b && !b.disabled) { b.click(); e.preventDefault(); }
     };
     switch (e.key) {
-      case "ArrowRight": case "n": case "N": click('[data-action="next"], [data-action="begin-quarter"], [data-action="q3-finish"]'); break;
+      case "ArrowRight": case "n": case "N": click('[data-action="next"], [data-action="begin-quarter"], [data-action="q3-finish"], [data-action="q3-bounce-done"]'); break;
       case "ArrowLeft": click('[data-action="prev"]'); break;
       case "r": case "R": click('[data-action="replace"]'); break;
       case "u": case "U": click('[data-action="undo"]'); break;
-      case "c": case "C": click('[data-action="q3-mark"][data-ok="1"]'); break;
-      case "x": case "X": click('[data-action="q3-mark"][data-ok="0"]'); break;
+      case "f": case "F": click('[data-action="bee-done"]'); break;
+      case "c": case "C": click('[data-action="q3-mark"][data-ok="1"], [data-action="q3-bounce"][data-ok="1"]'); break;
+      case "x": case "X": click('[data-action="q3-mark"][data-ok="0"], [data-action="q3-bounce"][data-ok="0"]'); break;
       case " ": if (game.phase === "q3run") click('[data-action="timer"]'); break;
     }
   });
